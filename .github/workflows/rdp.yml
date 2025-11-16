@@ -1,63 +1,95 @@
-name: RDP-AI-Server
+name: AI-RDP
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  ai_rdp:
     runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
-      - name: Enable RDP + Firewall
+      - name: Prepare RDP
+        shell: powershell
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0
+          netsh advfirewall firewall delete rule name="RDP-Open"
+          netsh advfirewall firewall add rule name="RDP-Open" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service TermService -Force
 
-      - name: Create RDP User
+      - name: Create login user
+        shell: powershell
         run: |
-          net user RDP P@ssw0rd! /add
-          net localgroup administrators RDP /add
-          net localgroup "Remote Desktop Users" RDP /add
+          $p = (32..126 | Get-Random -Count 14 | ForEach-Object {[char]$_}) -join ""
+          $sp = ConvertTo-SecureString $p -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $sp -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          echo "PASS=$p" >> $env:GITHUB_ENV
 
       - name: Install Tailscale
+        shell: powershell
         run: |
           curl.exe -L -o ts.msi "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          msiexec /i ts.msi /quiet /norestart
+          Start-Process msiexec.exe -ArgumentList "/i ts.msi /quiet /norestart" -Wait
 
       - name: Connect Tailscale
+        shell: powershell
         run: |
-          "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname="win-ai-$env:GITHUB_RUN_ID"
+          $ip=""
+          while ($ip -eq "") {
+            $ip = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4)
+            Start-Sleep 3
+          }
+          echo "TSIP=$ip" >> $env:GITHUB_ENV
 
       - name: Install Ollama
+        shell: powershell
         run: |
-          curl.exe -L -o ollama.msi https://ollama.com/download/OllamaSetup.exe
-          Start-Process msiexec.exe -ArgumentList "/i ollama.msi /quiet" -Wait
+          curl.exe -L -o ollama.exe "https://ollama.com/download/windows"
+          Start-Process .\ollama.exe -ArgumentList "/install" -Wait
+          Start-Sleep -Seconds 10
 
-      - name: Pull AI Models
+      - name: Download AI models
+        shell: powershell
         run: |
+          ollama pull chatgpt-oss
           ollama pull deepseek-coder:1.3b
           ollama pull qwen2.5:1.5b
-          ollama pull gemma2:2b
-          ollama pull llama3.2:1b
+
+      - name: Start Ollama server
+        shell: powershell
+        run: |
+          Start-Process -WindowStyle Hidden powershell "ollama serve"
+          Start-Sleep 5
 
       - name: Install OpenWebUI
+        shell: powershell
         run: |
-          git clone https://github.com/open-webui/open-webui
-          cd open-webui
-          python -m venv venv
-          .\venv\Scripts\activate
-          pip install -r backend/requirements.txt
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          curl.exe -L https://github.com/open-webui/open-webui/releases/latest/download/open-webui-windows.zip -o ui.zip
+          Expand-Archive ui.zip ./ui
+          Start-Process -WindowStyle Hidden ./ui/open-webui.exe
 
-      - name: Start OpenWebUI Backend
+      - name: Show access info
+        shell: powershell
         run: |
-          cd open-webui
-          .\venv\Scripts\activate
-          Start-Process -NoNewWindow powershell "cd backend; uvicorn open_webui.main:app --host 0.0.0.0 --port 3000"
+          Write-Host "`n============================="
+          Write-Host "   RDP Login Information"
+          Write-Host "============================="
+          Write-Host "IP: $env:TSIP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $env:PASS"
+          Write-Host "OpenWebUI: http://$env:TSIP:8080"
+          Write-Host "=============================`n"
 
       - name: Keep Alive
+        shell: powershell
         run: |
           while ($true) {
-            Write-Host "AI Server Running..."
-            Start-Sleep -Seconds 300
+            Write-Host "AI Server Active: $(Get-Date)"
+            Start-Sleep 120
           }
