@@ -1,0 +1,63 @@
+name: RDP-AI-Server
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Enable RDP + Firewall
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
+
+      - name: Create RDP User
+        run: |
+          net user RDP P@ssw0rd! /add
+          net localgroup administrators RDP /add
+          net localgroup "Remote Desktop Users" RDP /add
+
+      - name: Install Tailscale
+        run: |
+          curl.exe -L -o ts.msi "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          msiexec /i ts.msi /quiet /norestart
+
+      - name: Connect Tailscale
+        run: |
+          "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+
+      - name: Install Ollama
+        run: |
+          curl.exe -L -o ollama.msi https://ollama.com/download/OllamaSetup.exe
+          Start-Process msiexec.exe -ArgumentList "/i ollama.msi /quiet" -Wait
+
+      - name: Pull AI Models
+        run: |
+          ollama pull deepseek-coder:1.3b
+          ollama pull qwen2.5:1.5b
+          ollama pull gemma2:2b
+          ollama pull llama3.2:1b
+
+      - name: Install OpenWebUI
+        run: |
+          git clone https://github.com/open-webui/open-webui
+          cd open-webui
+          python -m venv venv
+          .\venv\Scripts\activate
+          pip install -r backend/requirements.txt
+
+      - name: Start OpenWebUI Backend
+        run: |
+          cd open-webui
+          .\venv\Scripts\activate
+          Start-Process -NoNewWindow powershell "cd backend; uvicorn open_webui.main:app --host 0.0.0.0 --port 3000"
+
+      - name: Keep Alive
+        run: |
+          while ($true) {
+            Write-Host "AI Server Running..."
+            Start-Sleep -Seconds 300
+          }
