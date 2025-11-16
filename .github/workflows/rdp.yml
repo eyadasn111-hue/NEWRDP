@@ -1,86 +1,78 @@
-name: RDP
+name: RDP + AI Server
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  build-rdp:
     runs-on: windows-latest
-    timeout-minutes: 3600
+    timeout-minutes: 360
 
     steps:
-      - name: Enable RDP + Disable NLA + Open Firewall
+      - name: Enable RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
-
+          netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
       - name: Create RDP User
         run: |
-          Add-Type -AssemblyName System.Security
-          $chars = @{
-            Upper = [char[]](65..90)
-            Lower = [char[]](97..122)
-            Num   = [char[]](48..57)
-            Spec  = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
-          }
-          $raw = @()
-          $raw += $chars.Upper | Get-Random -Count 3
-          $raw += $chars.Lower | Get-Random -Count 3
-          $raw += $chars.Num   | Get-Random -Count 3
-          $raw += $chars.Spec  | Get-Random -Count 3
-          $pass = -join ($raw | Sort-Object {Get-Random})
-          $sec = ConvertTo-SecureString $pass -AsPlainText -Force
-
+          $password = [Guid]::NewGuid().ToString('n').Substring(0,12) + "!"
+          $sec = ConvertTo-SecureString $password -AsPlainText -Force
           New-LocalUser -Name "RDP" -Password $sec -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-
-          echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
       - name: Install Tailscale
         run: |
           curl.exe -L -o ts.msi "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           Start-Process msiexec.exe -ArgumentList "/i ts.msi /quiet /norestart" -Wait
-          Remove-Item ts.msi -Force
 
       - name: Connect Tailscale
+        shell: pwsh
         run: |
           $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
-          & $ts up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname="gh-runner-$env:GITHUB_RUN_ID"
+          & $ts up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="runner-$env:GITHUB_RUN_ID"
 
           $ip = $null
-          for ($i=0; $i -lt 10; $i++) {
+          for ($i=0;$i -lt 10;$i++){
             $ip = (& $ts ip -4).Trim()
-            if ($ip) { break }
-            Start-Sleep 5
+            if($ip){ break }
+            Start-Sleep -Seconds 5
           }
 
-          if (-not $ip) {
-            Write-Error "Tailscale IP not assigned"
-            exit 1
-          }
-
+          if(-not $ip){ exit 1 }
           echo "TS_IP=$ip" >> $env:GITHUB_ENV
 
-      - name: Show RDP Data
+      - name: Install Ollama
         run: |
-          Write-Host "=============================="
-          Write-Host "✔ Tailscale Connected"
-          Write-Host "✔ Login Information:"
-          Write-Host "IP Address: $env:TS_IP"
-          Write-Host "User: RDP"
-          Write-Host "Password: $env:RDP_PASS"
-          Write-Host "=============================="
+          curl.exe -L -o ollama.msi "https://ollama.ai/download/OllamaSetup.exe"
+          Start-Process ollama.msi -Wait
 
-      - name: Keep runner alive
+      - name: Pull AI Models
+        run: |
+          & "C:\Program Files\Ollama\ollama.exe" pull deepseek-coder:1.3b
+          & "C:\Program Files\Ollama\ollama.exe" pull chatgpt-oss:latest
+
+      - name: Launch AI Server
+        run: |
+          Start-Process "C:\Program Files\Ollama\ollama.exe" serve
+
+      - name: Summary
+        run: |
+          Write-Host "======================="
+          Write-Host "🔥 RDP معلومات الدخول 🔥"
+          Write-Host "IP: $env:TS_IP"
+          Write-Host "User: RDP"
+          Write-Host "Pass: $env:RDP_PASS"
+          Write-Host "======================="
+
+      - name: Keep Alive
         run: |
           while ($true) {
-            Write-Host "RDP active... $(Get-Date)"
+            Write-Host "Running server... $(Get-Date)"
             Start-Sleep -Seconds 300
           }
