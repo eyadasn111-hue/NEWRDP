@@ -47,10 +47,10 @@ jobs:
           if(-not $ip){ exit 1 }
           echo "TS_IP=$ip" >> $env:GITHUB_ENV
 
-      - name: Install Ollama
-        run: |
-          curl.exe -L -o ollama.msi "https://ollama.ai/download/OllamaSetup.exe"
-          Start-Process ollama.msi -Wait
+     - name: Install Ollama
+  run: |
+    curl.exe -L -o ollama.msi "https://ollama.ai/download/OllamaSetup.exe"
+    Start-Process msiexec.exe -ArgumentList "/i ollama.msi /qn /norestart" -Wait
 
       - name: Pull AI Models
         run: |
